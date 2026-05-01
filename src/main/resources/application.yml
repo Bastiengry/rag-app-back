@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: rag-app-back
+  ai:
+    mistralai:  # Ou openai
+      api-key: ${AI_API_KEY}
+      chat:
+        options:
+          model: mistral-large-latest # Ou gpt-4o
+      embedding:
+        options:
+          model: mistral-embed
+    vectorstore:
+      pgvector:
+        index-type: HNSW # On force l'indexation haute performance !
+        distance-type: cosine_distance
+  datasource:
+    url: jdbc:postgresql://localhost:5433/rag-app-db
+    username: postgres
+    password: postgres
