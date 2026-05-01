@@ -1,4 +1,4 @@
-package fr.bgsoft.rag.rag_app_back.controller;
+package fr.bgsoft.rag.ragappback.dto;
 
 import lombok.Builder;
 import lombok.Data;

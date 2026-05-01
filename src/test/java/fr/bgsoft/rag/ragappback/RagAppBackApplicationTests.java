@@ -1,4 +1,4 @@
-package fr.bgsoft.rag.rag_app_back;
+package fr.bgsoft.rag.ragappback;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
