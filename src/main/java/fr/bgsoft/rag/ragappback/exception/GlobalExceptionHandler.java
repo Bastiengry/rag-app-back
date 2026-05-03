@@ -22,6 +22,16 @@ public class GlobalExceptionHandler {
                 .build());
     }
 
+    @ExceptionHandler(ConversationNotFoundException.class)
+    public ResponseEntity<ChatResponseDto> handleConversationNotFound(ConversationNotFoundException ex) {
+        log.warn("Conversation not found", ex);
+        return ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body(ChatResponseDto.builder()
+                .message(ex.getMessage())
+                .build());
+    }
+
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ChatResponseDto> handleGenericException(Exception ex) {
         log.error("Unexpected error", ex);

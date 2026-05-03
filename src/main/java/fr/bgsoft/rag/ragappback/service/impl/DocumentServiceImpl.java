@@ -33,7 +33,7 @@ public class DocumentServiceImpl implements DocumentService {
             log.info("Starting to upload PDF file");
 
             // Loads the PDF file
-            byte[] bytes = file.getBytes();
+            final byte[] bytes = file.getBytes();
             try (PDDocument document = Loader.loadPDF(bytes)) {
                 PDFTextStripper stripper = new PDFTextStripper();
                 String plainText = stripper.getText(document);

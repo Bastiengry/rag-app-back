@@ -1,18 +1,25 @@
 package fr.bgsoft.rag.ragappback.service.impl;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.Deque;
+import java.time.Instant;
 import java.util.List;
+import java.util.UUID;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.ai.chat.client.advisor.MessageChatMemoryAdvisor;
 import org.springframework.ai.chat.client.advisor.QuestionAnswerAdvisor;
+import org.springframework.ai.chat.memory.ChatMemory;
 import org.springframework.ai.vectorstore.SearchRequest;
 import org.springframework.ai.vectorstore.VectorStore;
 import org.springframework.stereotype.Service;
 
-import fr.bgsoft.rag.ragappback.config.ChatProperties;
 import fr.bgsoft.rag.ragappback.dto.ChatResponseDto;
+import fr.bgsoft.rag.ragappback.dto.ConversationMessageDto;
+import fr.bgsoft.rag.ragappback.dto.LightConversationDto;
+import fr.bgsoft.rag.ragappback.entity.Conversation;
+import fr.bgsoft.rag.ragappback.exception.ConversationNotFoundException;
+import fr.bgsoft.rag.ragappback.mapper.ConversationMapper;
+import fr.bgsoft.rag.ragappback.repository.ConversationMessageRepository;
+import fr.bgsoft.rag.ragappback.repository.ConversationRepository;
 import fr.bgsoft.rag.ragappback.service.ChatService;
 import lombok.extern.slf4j.Slf4j;
 import reactor.core.publisher.Flux;
@@ -22,67 +29,92 @@ import reactor.core.publisher.Flux;
 public class ChatServiceImpl implements ChatService {
 
     private final ChatClient chatClient;
-    private final Deque<ChatMessage> history = new ArrayDeque<>();
-    private final int historySize;
+    private final ConversationRepository conversationRepository;
+    private final ConversationMessageRepository messageRepository;
+    private final ConversationMapper conversationMapper;
 
-    public ChatServiceImpl(final ChatClient.Builder builder, final VectorStore vectorStore, final ChatProperties chatProperties) {
+    public ChatServiceImpl(
+            final ChatClient.Builder builder,
+            final VectorStore vectorStore,
+            final ChatMemory chatMemory,
+            final ConversationRepository conversationRepository,
+            final ConversationMessageRepository messageRepository,
+            final ConversationMapper conversationMapper) {
+        
+        this.conversationRepository = conversationRepository;
+        this.messageRepository = messageRepository;
+        this.conversationMapper = conversationMapper;
+
         this.chatClient = builder
-            .defaultAdvisors(new QuestionAnswerAdvisor(vectorStore,
-                SearchRequest.defaults()
-                    .withTopK(5)
-                    .withSimilarityThreshold(0.0)))
-            .build();
-        this.historySize = chatProperties.getHistorySize();
+                .defaultSystem("Tu es un assistant expert. Réponds en français. Utilise le contexte fourni pour répondre avec précision.")
+                .defaultAdvisors(
+                        // Advisor 1 : conversation history (Memory)
+                        new MessageChatMemoryAdvisor(chatMemory),
+                        // Advisor 2 : document reading (RAG)
+                        new QuestionAnswerAdvisor(vectorStore, SearchRequest.defaults().withTopK(5))
+                )
+                .build();
     }
 
     @Override
-    public Flux<ChatResponseDto> stream(String message) {
-        List<ChatMessage> snapshot = getHistorySnapshot();
-        addMessage(new ChatMessage(Role.USER, message));
-
-        var prompt = chatClient.prompt()
-            .system("Tu es un assistant expert. Utilise le contexte fourni pour répondre, mais si le contexte est vide, utilise tes connaissances générales.");
-
-        for (ChatMessage previous : snapshot) {
-            if (previous.role() == Role.USER) {
-                prompt = prompt.user(previous.content());
-            } else {
-                prompt = prompt.system(previous.content());
-            }
+    public Flux<ChatResponseDto> stream(final UUID conversationId, final String message) {
+        if (!conversationRepository.existsById(conversationId)) {
+            throw new ConversationNotFoundException("The conversation " + conversationId + " does not exist.");
         }
 
-        prompt = prompt.user(message);
-        StringBuilder assistantBuilder = new StringBuilder();
-
-        return prompt.stream()
+        return this.chatClient.prompt()
+            .user(message)
+            .advisors(a -> a
+                // Conversion explicite en String pour la mémoire
+                .param(MessageChatMemoryAdvisor.CHAT_MEMORY_CONVERSATION_ID_KEY, conversationId.toString())
+                // On peut aussi limiter la mémoire pour éviter que l'ancien contexte pollue trop
+                .param(MessageChatMemoryAdvisor.CHAT_MEMORY_RETRIEVE_SIZE_KEY, 10)
+            )
+            .stream()
             .content()
-            .doOnNext(chunk -> {
-                if (chunk != null) {
-                    assistantBuilder.append(chunk);
-                }
-            })
             .map(chunk -> ChatResponseDto.builder()
-                .message(chunk != null ? chunk : "")
-                .build())
-            .doOnComplete(() -> addMessage(new ChatMessage(Role.ASSISTANT, assistantBuilder.toString())));
+                    .message(chunk)
+                    .build())
+            .doOnComplete(() -> updateConversationTimestamp(conversationId));
+            
     }
 
-    private synchronized void addMessage(ChatMessage message) {
-        history.addLast(message);
-        while (history.size() > historySize) {
-            history.removeFirst();
-        }
+    private void updateConversationTimestamp(UUID conversationId) {
+        conversationRepository.findById(conversationId).ifPresent(conv -> {
+            conv.setUpdatedAt(Instant.now());
+            conversationRepository.save(conv);
+            log.debug("Timestamp updated for conversation : {}", conversationId);
+        });
     }
 
-    private synchronized List<ChatMessage> getHistorySnapshot() {
-        return new ArrayList<>(history);
+    @Override
+    public LightConversationDto createConversation(String title) {
+        Conversation conversation = Conversation.builder()
+                .title(title != null && !title.isBlank() ? title : "New conversation")
+                .createdAt(Instant.now())
+                .updatedAt(Instant.now())
+                .build();
+        
+        return conversationMapper.toLightDto(conversationRepository.save(conversation));
     }
 
-    private record ChatMessage(Role role, String content) {
+    @Override
+    public List<ConversationMessageDto> getMessagesByConversationId(UUID conversationId) {
+        return messageRepository.findByConversationIdOrderBySequenceNumberAsc(conversationId)
+                .stream()
+                .map(conversationMapper::toMessageDto)
+                .toList();
     }
 
-    private enum Role {
-        USER,
-        ASSISTANT
+    @Override
+    public List<LightConversationDto> listConversations() {
+        return conversationRepository.findAll().stream()
+                .map(conversationMapper::toLightDto)
+                .toList();
+    }
+
+    @Override
+    public void deleteConversation(UUID id) {
+        conversationRepository.deleteById(id);
     }
 }
